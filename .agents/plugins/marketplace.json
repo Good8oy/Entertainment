@@ -1,0 +1,20 @@
+{
+  "name": "entertainment-local",
+  "interface": {
+    "displayName": "Entertainment Local"
+  },
+  "plugins": [
+    {
+      "name": "codex-bilibili-focus",
+      "source": {
+        "source": "local",
+        "path": "./plugins/codex-bilibili-focus"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

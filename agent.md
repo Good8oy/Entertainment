@@ -22,3 +22,9 @@ This repository is the source of truth for agent-maintained changes.
 - Do not overwrite user or teammate changes.
 - Explain what changed and how it was verified.
 - If the repository URL, branch, or scope is unclear, ask before editing.
+
+## Bilibili Focus Mode
+
+- For every user task in this repository, run `plugins/codex-bilibili-focus/scripts/Open-BilibiliBreak.ps1` before starting substantive work.
+- Before sending the final answer, run `plugins/codex-bilibili-focus/scripts/Focus-Codex.ps1` so the Codex desktop app regains focus.
+- If either focus helper script fails, continue the user task and report the focus failure briefly.

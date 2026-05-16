@@ -1,0 +1,40 @@
+{
+  "name": "codex-bilibili-focus",
+  "version": "0.1.0",
+  "description": "Opens Bilibili while Codex works, then returns focus to the Codex desktop app.",
+  "author": {
+    "name": "Good8oy",
+    "email": "noreply@example.com",
+    "url": "https://github.com/Good8oy"
+  },
+  "homepage": "https://github.com/Good8oy/Entertainment",
+  "repository": "https://github.com/Good8oy/Entertainment",
+  "license": "MIT",
+  "keywords": [
+    "bilibili",
+    "focus",
+    "windows",
+    "codex"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Codex Bilibili Focus",
+    "shortDescription": "Open Bilibili during Codex runs and return focus when done.",
+    "longDescription": "A Windows helper plugin that lets Codex open Bilibili at the start of a turn and focus the Codex desktop app again before the final response.",
+    "developerName": "Good8oy",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Shell"
+    ],
+    "websiteURL": "https://www.bilibili.com/",
+    "privacyPolicyURL": "https://www.bilibili.com/blackboard/privacy-pc.html",
+    "termsOfServiceURL": "https://www.bilibili.com/blackboard/account-useragreement.html",
+    "defaultPrompt": [
+      "Use Bilibili focus mode for this task.",
+      "Open Bilibili while you work, then return to Codex.",
+      "Start a Bilibili break and focus Codex when complete."
+    ],
+    "brandColor": "#00A1D6"
+  }
+}

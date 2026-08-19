@@ -11,10 +11,12 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.text.InputType;
 
 import java.util.List;
 
@@ -23,6 +25,12 @@ public final class MainActivity extends Activity {
     private static final int REQUEST_PICK_SCREENSHOT = 4101;
     private LinearLayout presetsContainer;
     private TextView statusView;
+    private TextView mappingStatusView;
+    private EditText redInput;
+    private EditText greenInput;
+    private EditText blueInput;
+    private EditText brightnessInput;
+    private int screenshotMode = CalibrationActivity.MODE_PRESET;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -34,6 +42,7 @@ public final class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         renderPresets();
+        updateMappingStatus();
         statusView.setText(MijiaColorAccessibilityService.isReady()
                 ? "状态：无障碍服务已开启。请在米家颜色页点击右侧“色卡”悬浮按钮。"
                 : "状态：请先在系统设置中开启“米家色盘助手”无障碍服务。");
@@ -65,12 +74,47 @@ public final class MainActivity extends Activity {
         miHomeButton.setOnClickListener(v -> openMiHome());
         root.addView(miHomeButton, matchWidth());
 
+        root.addView(sectionTitle("手动 RGB 与亮度"));
+        TextView manualGuide = text("RGB 用于计算色相与饱和度；亮度（1–100）对应已校准的米家亮度滑杆。保存后，到米家颜色页从悬浮色卡选择“应用手动 RGB”。", 14, false);
+        manualGuide.setTextColor(Color.rgb(80, 80, 80));
+        root.addView(manualGuide);
+        PresetStore.ManualColour manualColour = PresetStore.loadManualColour(this);
+        LinearLayout rgbRow = new LinearLayout(this);
+        rgbRow.setOrientation(LinearLayout.HORIZONTAL);
+        redInput = numberInput("R", manualColour.red);
+        greenInput = numberInput("G", manualColour.green);
+        blueInput = numberInput("B", manualColour.blue);
+        rgbRow.addView(redInput, weighted());
+        rgbRow.addView(greenInput, weighted());
+        rgbRow.addView(blueInput, weighted());
+        root.addView(rgbRow, matchWidth());
+        brightnessInput = numberInput("亮度 1–100", manualColour.brightness);
+        root.addView(brightnessInput, matchWidth());
+        Button saveManualButton = button("保存手动 RGB 与亮度");
+        saveManualButton.setOnClickListener(v -> saveManualColour());
+        root.addView(saveManualButton, matchWidth());
+
+        root.addView(sectionTitle("一次性坐标校准"));
+        TextView mappingGuide = text("使用与实际操作相同的完整米家截图：色盘范围需点左上、右下；亮度滑杆需点 0%、100%。", 14, false);
+        mappingGuide.setTextColor(Color.rgb(80, 80, 80));
+        root.addView(mappingGuide);
+        Button colourBoundsButton = button("校准 RGB 色盘范围");
+        colourBoundsButton.setOnClickListener(v -> chooseScreenshot(CalibrationActivity.MODE_COLOUR_BOUNDS));
+        root.addView(colourBoundsButton, matchWidth());
+        Button brightnessBoundsButton = button("校准亮度滑杆");
+        brightnessBoundsButton.setOnClickListener(v -> chooseScreenshot(CalibrationActivity.MODE_BRIGHTNESS_BOUNDS));
+        root.addView(brightnessBoundsButton, matchWidth());
+        mappingStatusView = text("", 14, false);
+        mappingStatusView.setTextColor(Color.rgb(80, 80, 80));
+        mappingStatusView.setPadding(0, dp(4), 0, 0);
+        root.addView(mappingStatusView);
+
         root.addView(sectionTitle("新增色卡"));
         TextView guide = text("先在米家打开本灯的“颜色”色盘并截屏；回到这里选择该截图，再在截图上点选目标位置。截图只用于记录坐标，不会上传。", 14, false);
         guide.setTextColor(Color.rgb(80, 80, 80));
         root.addView(guide);
         Button calibrateButton = button("从米家截图校准色点");
-        calibrateButton.setOnClickListener(v -> chooseScreenshot());
+        calibrateButton.setOnClickListener(v -> chooseScreenshot(CalibrationActivity.MODE_PRESET));
         root.addView(calibrateButton, matchWidth());
 
         root.addView(sectionTitle("已保存色卡"));
@@ -85,7 +129,8 @@ public final class MainActivity extends Activity {
         return scrollView;
     }
 
-    private void chooseScreenshot() {
+    private void chooseScreenshot(int mode) {
+        screenshotMode = mode;
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("image/*");
@@ -105,6 +150,7 @@ public final class MainActivity extends Activity {
         }
         Intent calibrate = new Intent(this, CalibrationActivity.class);
         calibrate.setData(imageUri);
+        calibrate.putExtra(CalibrationActivity.EXTRA_MODE, screenshotMode);
         calibrate.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
         startActivity(calibrate);
     }
@@ -160,6 +206,39 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private void saveManualColour() {
+        Integer red = readInRange(redInput, "R", 0, 255);
+        Integer green = readInRange(greenInput, "G", 0, 255);
+        Integer blue = readInRange(blueInput, "B", 0, 255);
+        Integer brightness = readInRange(brightnessInput, "亮度", 1, 100);
+        if (red == null || green == null || blue == null || brightness == null) {
+            return;
+        }
+        PresetStore.saveManualColour(this, new PresetStore.ManualColour(red, green, blue, brightness));
+        Toast.makeText(this, "已保存；请回到米家颜色页，从悬浮色卡应用。", Toast.LENGTH_SHORT).show();
+    }
+
+    private Integer readInRange(EditText input, String label, int min, int max) {
+        try {
+            int value = Integer.parseInt(input.getText().toString().trim());
+            if (value >= min && value <= max) {
+                return value;
+            }
+        } catch (NumberFormatException ignored) {
+        }
+        Toast.makeText(this, label + " 必须在 " + min + " 到 " + max + " 之间。", Toast.LENGTH_SHORT).show();
+        return null;
+    }
+
+    private void updateMappingStatus() {
+        if (mappingStatusView == null) {
+            return;
+        }
+        PresetStore.Mapping mapping = PresetStore.loadMapping(this);
+        mappingStatusView.setText("校准状态：色盘" + (mapping.hasColourBounds() ? "已完成" : "未完成")
+                + "；亮度滑杆" + (mapping.hasBrightnessBounds() ? "已完成" : "未完成"));
+    }
+
     private TextView text(String value, int size, boolean bold) {
         TextView view = new TextView(this);
         view.setText(value);
@@ -183,8 +262,24 @@ public final class MainActivity extends Activity {
         return button;
     }
 
+    private EditText numberInput(String hint, int value) {
+        EditText input = new EditText(this);
+        input.setHint(hint);
+        input.setText(String.valueOf(value));
+        input.setSingleLine(true);
+        input.setGravity(Gravity.CENTER);
+        input.setInputType(InputType.TYPE_CLASS_NUMBER);
+        return input;
+    }
+
     private LinearLayout.LayoutParams matchWidth() {
         return new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+    }
+
+    private LinearLayout.LayoutParams weighted() {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+        params.rightMargin = dp(4);
+        return params;
     }
 
     private int dp(int value) {

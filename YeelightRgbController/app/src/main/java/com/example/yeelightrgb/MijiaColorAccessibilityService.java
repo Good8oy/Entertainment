@@ -118,6 +118,24 @@ public final class MijiaColorAccessibilityService extends AccessibilityService {
         title.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
         panel.addView(title);
 
+        PresetStore.ManualColour manualColour = PresetStore.loadManualColour(this);
+        Button manualOption = new Button(this);
+        manualOption.setText("应用手动 RGB\n(" + manualColour.red + ", " + manualColour.green + ", "
+                + manualColour.blue + ") · 亮度 " + manualColour.brightness + "%");
+        manualOption.setTextColor(Color.DKGRAY);
+        manualOption.setAllCaps(false);
+        manualOption.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        GradientDrawable manualBackground = new GradientDrawable();
+        manualBackground.setColor(manualColour.previewColour());
+        manualBackground.setAlpha(70);
+        manualBackground.setCornerRadius(dp(8));
+        manualOption.setBackground(manualBackground);
+        manualOption.setOnClickListener(v -> applyManualColour(manualColour));
+        LinearLayout.LayoutParams manualParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        manualParams.topMargin = dp(6);
+        panel.addView(manualOption, manualParams);
+
         List<PresetStore.Preset> presets = PresetStore.load(this);
         if (presets.isEmpty()) {
             TextView empty = new TextView(this);
@@ -183,6 +201,70 @@ public final class MijiaColorAccessibilityService extends AccessibilityService {
             toast(sent ? "已选择：" + preset.name : "手势未被系统接受。 ");
             showBubble();
         }, 120);
+    }
+
+    private void applyManualColour(PresetStore.ManualColour manualColour) {
+        if (!isMiHomeColourPage()) {
+            toast("请先停留在米家该灯的“颜色”色盘页面。 ");
+            showBubble();
+            return;
+        }
+        PresetStore.Mapping mapping = PresetStore.loadMapping(this);
+        if (!mapping.hasColourBounds() || !mapping.hasBrightnessBounds()) {
+            toast("请先在助手中完成色盘与亮度滑杆校准。 ");
+            showBubble();
+            return;
+        }
+        DisplayMetrics metrics = new DisplayMetrics();
+        windowManager.getDefaultDisplay().getRealMetrics(metrics);
+        if (!hasMatchingAspect(metrics, mapping.colourWidth, mapping.colourHeight)
+                || !hasMatchingAspect(metrics, mapping.brightnessWidth, mapping.brightnessHeight)) {
+            toast("当前屏幕比例与校准截图不同，请重新校准。 ");
+            showBubble();
+            return;
+        }
+
+        float[] hsv = new float[3];
+        Color.RGBToHSV(manualColour.red, manualColour.green, manualColour.blue, hsv);
+        int colourX = Math.round(scaleX(mapping.left + (hsv[0] / 360f) * (mapping.right - mapping.left),
+                metrics.widthPixels, mapping.colourWidth));
+        int colourY = Math.round(scaleY(mapping.top + (1f - hsv[1]) * (mapping.bottom - mapping.top),
+                metrics.heightPixels, mapping.colourHeight));
+        float brightnessRatio = manualColour.brightness / 100f;
+        int brightnessX = Math.round(scaleX(mapping.brightnessStartX
+                + brightnessRatio * (mapping.brightnessEndX - mapping.brightnessStartX),
+                metrics.widthPixels, mapping.brightnessWidth));
+        int brightnessY = Math.round(scaleY(mapping.brightnessStartY
+                + brightnessRatio * (mapping.brightnessEndY - mapping.brightnessStartY),
+                metrics.heightPixels, mapping.brightnessHeight));
+
+        removeFloatingView();
+        handler.postDelayed(() -> {
+            if (!dispatchTap(colourX, colourY)) {
+                toast("色盘手势未被系统接受。 ");
+                showBubble();
+                return;
+            }
+            handler.postDelayed(() -> {
+                boolean brightnessSent = dispatchTap(brightnessX, brightnessY);
+                toast(brightnessSent ? "已应用手动 RGB 与亮度。" : "已点击色盘，但亮度手势未被系统接受。 ");
+                showBubble();
+            }, 250);
+        }, 120);
+    }
+
+    private boolean hasMatchingAspect(DisplayMetrics metrics, int referenceWidth, int referenceHeight) {
+        float currentAspect = metrics.widthPixels / (float) metrics.heightPixels;
+        float referenceAspect = referenceWidth / (float) referenceHeight;
+        return Math.abs(currentAspect - referenceAspect) <= 0.01f;
+    }
+
+    private float scaleX(float x, int currentWidth, int referenceWidth) {
+        return x * currentWidth / referenceWidth;
+    }
+
+    private float scaleY(float y, int currentHeight, int referenceHeight) {
+        return y * currentHeight / referenceHeight;
     }
 
     private boolean isMiHomeColourPage() {

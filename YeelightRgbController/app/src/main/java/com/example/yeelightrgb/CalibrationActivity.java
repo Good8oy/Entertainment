@@ -1,7 +1,6 @@
 package com.example.yeelightrgb;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
@@ -13,7 +12,6 @@ import android.os.Bundle;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -22,24 +20,17 @@ import android.widget.TextView;
 import java.io.IOException;
 import java.io.InputStream;
 
-/** Translates a point in a full-screen Mi Home screenshot into a screen coordinate. */
+/** Calibrates only the safe rectangle in which live RGB matching is allowed to tap. */
 public final class CalibrationActivity extends Activity {
-    static final String EXTRA_MODE = "mode";
-    static final int MODE_PRESET = 0;
-    static final int MODE_COLOUR_BOUNDS = 1;
-    static final int MODE_BRIGHTNESS_BOUNDS = 2;
-
     private Bitmap screenshot;
     private ImageView imageView;
     private TextView statusView;
-    private int mode;
     private int firstX = -1;
     private int firstY = -1;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        mode = getIntent().getIntExtra(EXTRA_MODE, MODE_PRESET);
         setContentView(createContentView());
         loadScreenshot(getIntent().getData());
     }
@@ -60,13 +51,13 @@ public final class CalibrationActivity extends Activity {
         scroll.addView(root);
 
         TextView title = new TextView(this);
-        title.setText(mode == MODE_PRESET ? "点选米家色盘位置" : "校准米家控制区域");
+        title.setText("校准安全色盘区域");
         title.setTextSize(22);
         title.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
         root.addView(title);
 
         TextView guide = new TextView(this);
-        guide.setText(guideText());
+        guide.setText("先点米家彩色色盘矩形的左上角，再点右下角。运行时只会在此区域寻找 RGB，绝不会点击区域外的“模式”、定时或其他按钮。 ");
         guide.setTextSize(14);
         guide.setPadding(0, dp(6), 0, dp(8));
         root.addView(guide);
@@ -131,61 +122,16 @@ public final class CalibrationActivity extends Activity {
             statusView.setText("请点击截图内容区域。 ");
             return true;
         }
-        if (mode == MODE_PRESET) {
-            promptToSave(x, y, screenshot.getPixel(x, y));
-        } else {
-            saveCalibrationPoint(x, y);
-        }
-        return true;
-    }
-
-    private String guideText() {
-        if (mode == MODE_COLOUR_BOUNDS) {
-            return "先点色盘矩形的左上角，再点右下角。请只选取实际可点的彩色区域。";
-        }
-        if (mode == MODE_BRIGHTNESS_BOUNDS) {
-            return "先点亮度滑杆的 0% 位置，再点 100% 位置。两点可为水平或垂直方向。";
-        }
-        return "请精确点击截图中色盘上的目标颜色。不要点击“我的模式”色块；随后为该点命名。";
-    }
-
-    private void saveCalibrationPoint(int x, int y) {
         if (firstX < 0) {
             firstX = x;
             firstY = y;
-            statusView.setText(mode == MODE_COLOUR_BOUNDS
-                    ? "已记录第一个点；请点色盘矩形的右下角。"
-                    : "已记录 0% 位置；请点亮度滑杆的 100% 位置。");
-            return;
+            statusView.setText("已记录左上角；请点色盘矩形的右下角。 ");
+            return true;
         }
-        if (mode == MODE_COLOUR_BOUNDS) {
-            PresetStore.saveColourBounds(this, screenshot.getWidth(), screenshot.getHeight(), firstX, firstY, x, y);
-            statusView.setText("色盘范围已保存。 ");
-        } else {
-            PresetStore.saveBrightnessBounds(this, screenshot.getWidth(), screenshot.getHeight(), firstX, firstY, x, y);
-            statusView.setText("亮度滑杆范围已保存。 ");
-        }
+        PresetStore.saveRegion(this, screenshot.getWidth(), screenshot.getHeight(), firstX, firstY, x, y);
+        statusView.setText("安全色盘区域已保存。 ");
         finish();
-    }
-
-    private void promptToSave(int x, int y, int colour) {
-        EditText nameInput = new EditText(this);
-        nameInput.setHint("例如：拍摄青色");
-        new AlertDialog.Builder(this)
-                .setTitle("保存色盘点")
-                .setMessage("坐标 (" + x + ", " + y + ")")
-                .setView(nameInput)
-                .setNegativeButton("取消", null)
-                .setPositiveButton("保存", (dialog, which) -> {
-                    String name = nameInput.getText().toString().trim();
-                    if (name.isEmpty()) {
-                        name = "未命名色卡";
-                    }
-                    PresetStore.add(this, new PresetStore.Preset(name, x, y,
-                            screenshot.getWidth(), screenshot.getHeight(), colour));
-                    finish();
-                })
-                .show();
+        return true;
     }
 
     private int dp(int value) {

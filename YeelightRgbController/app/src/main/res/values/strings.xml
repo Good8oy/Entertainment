@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">米家色盘助手</string>
-    <string name="accessibility_description">仅在米家颜色页面，由用户从悬浮色卡选择后执行已校准的一次点击。</string>
+    <string name="app_name">米家 RGB 找色助手</string>
+    <string name="accessibility_description">仅在米家颜色页面，由用户触发后在已校准色盘区域内识别 RGB 并点击。</string>
 </resources>

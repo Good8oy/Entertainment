@@ -2,14 +2,17 @@ package com.example.yeelightrgb;
 
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
-import android.content.Intent;
+import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
 import android.graphics.drawable.GradientDrawable;
+import android.hardware.HardwareBuffer;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.DisplayMetrics;
+import android.view.Display;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -22,16 +25,17 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.lang.ref.WeakReference;
-import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
-/**
- * Hosts the colour-card overlay and emits one calibrated tap only while the Mi Home colour page is active.
- */
+/** Finds and taps a requested RGB only within the user-calibrated Mi Home colour rectangle. */
 public final class MijiaColorAccessibilityService extends AccessibilityService {
     static final String MI_HOME_PACKAGE = "com.xiaomi.smarthome";
+    private static final int MAX_CHANNEL_DIFFERENCE = 18;
     private static WeakReference<MijiaColorAccessibilityService> current = new WeakReference<>(null);
 
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final ExecutorService scanExecutor = Executors.newSingleThreadExecutor();
     private WindowManager windowManager;
     private View floatingView;
     private WindowManager.LayoutParams floatingParams;
@@ -58,20 +62,14 @@ public final class MijiaColorAccessibilityService extends AccessibilityService {
     }
 
     @Override
-    public boolean onUnbind(Intent intent) {
-        removeFloatingView();
-        if (current.get() == this) {
-            current = new WeakReference<>(null);
-        }
+    public boolean onUnbind(android.content.Intent intent) {
+        cleanup();
         return super.onUnbind(intent);
     }
 
     @Override
     public void onDestroy() {
-        removeFloatingView();
-        if (current.get() == this) {
-            current = new WeakReference<>(null);
-        }
+        cleanup();
         super.onDestroy();
     }
 
@@ -79,10 +77,18 @@ public final class MijiaColorAccessibilityService extends AccessibilityService {
         return current.get() != null;
     }
 
+    private void cleanup() {
+        removeFloatingView();
+        scanExecutor.shutdownNow();
+        if (current.get() == this) {
+            current = new WeakReference<>(null);
+        }
+    }
+
     private void showBubble() {
         removeFloatingView();
         TextView bubble = new TextView(this);
-        bubble.setText("色卡");
+        bubble.setText("找色");
         bubble.setTextColor(Color.WHITE);
         bubble.setTextSize(15);
         bubble.setGravity(Gravity.CENTER);
@@ -100,7 +106,7 @@ public final class MijiaColorAccessibilityService extends AccessibilityService {
         windowManager.addView(floatingView, floatingParams);
     }
 
-    private void showPalette() {
+    private void showPicker() {
         removeFloatingView();
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
@@ -111,59 +117,20 @@ public final class MijiaColorAccessibilityService extends AccessibilityService {
         panel.setBackground(background);
         panel.setElevation(dp(8));
 
+        PresetStore.RgbTarget target = PresetStore.loadTarget(this);
         TextView title = new TextView(this);
-        title.setText("米家色卡");
+        title.setText("目标 RGB(" + target.red + ", " + target.green + ", " + target.blue + ")");
         title.setTextColor(Color.DKGRAY);
         title.setTextSize(16);
         title.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
         panel.addView(title);
 
-        PresetStore.ManualColour manualColour = PresetStore.loadManualColour(this);
-        Button manualOption = new Button(this);
-        manualOption.setText("应用手动 RGB\n(" + manualColour.red + ", " + manualColour.green + ", "
-                + manualColour.blue + ") · 亮度 " + manualColour.brightness + "%");
-        manualOption.setTextColor(Color.DKGRAY);
-        manualOption.setAllCaps(false);
-        manualOption.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-        GradientDrawable manualBackground = new GradientDrawable();
-        manualBackground.setColor(manualColour.previewColour());
-        manualBackground.setAlpha(70);
-        manualBackground.setCornerRadius(dp(8));
-        manualOption.setBackground(manualBackground);
-        manualOption.setOnClickListener(v -> applyManualColour(manualColour));
-        LinearLayout.LayoutParams manualParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        manualParams.topMargin = dp(6);
-        panel.addView(manualOption, manualParams);
-
-        List<PresetStore.Preset> presets = PresetStore.load(this);
-        if (presets.isEmpty()) {
-            TextView empty = new TextView(this);
-            empty.setText("请先在助手中从截图校准色卡。 ");
-            empty.setTextColor(Color.DKGRAY);
-            empty.setPadding(0, dp(8), 0, dp(4));
-            panel.addView(empty);
-        } else {
-            for (PresetStore.Preset preset : presets) {
-                Button option = new Button(this);
-                option.setText(preset.name);
-                option.setTextColor(Color.DKGRAY);
-                option.setAllCaps(false);
-                option.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-                GradientDrawable optionBackground = new GradientDrawable();
-                optionBackground.setColor(preset.previewColor);
-                optionBackground.setAlpha(70);
-                optionBackground.setCornerRadius(dp(8));
-                option.setBackground(optionBackground);
-                option.setOnClickListener(v -> applyPreset(preset));
-                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT
-                );
-                params.topMargin = dp(6);
-                panel.addView(option, params);
-            }
-        }
+        Button find = new Button(this);
+        find.setText("识别并点击目标 RGB");
+        find.setAllCaps(false);
+        find.setTextColor(Color.DKGRAY);
+        find.setOnClickListener(v -> findAndTap(target));
+        panel.addView(find);
 
         Button close = new Button(this);
         close.setText("收起");
@@ -178,93 +145,114 @@ public final class MijiaColorAccessibilityService extends AccessibilityService {
         windowManager.addView(floatingView, floatingParams);
     }
 
-    private void applyPreset(PresetStore.Preset preset) {
+    private void findAndTap(PresetStore.RgbTarget target) {
         if (!isMiHomeColourPage()) {
-            toast("请先停留在米家该灯的“颜色”色盘页面。 ");
+            toast("请先停留在米家该灯的颜色色盘页面。 ");
+            showBubble();
+            return;
+        }
+        PresetStore.ColourRegion region = PresetStore.loadRegion(this);
+        if (!region.isValid()) {
+            toast("请先在助手中校准安全色盘区域。 ");
+            showBubble();
+            return;
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            toast("此功能需要 Android 11 或更新版本。 ");
             showBubble();
             return;
         }
         DisplayMetrics metrics = new DisplayMetrics();
         windowManager.getDefaultDisplay().getRealMetrics(metrics);
         float currentAspect = metrics.widthPixels / (float) metrics.heightPixels;
-        float referenceAspect = preset.referenceWidth / (float) preset.referenceHeight;
+        float referenceAspect = region.referenceWidth / (float) region.referenceHeight;
         if (Math.abs(currentAspect - referenceAspect) > 0.01f) {
             toast("当前屏幕比例与校准截图不同，请重新校准。 ");
             showBubble();
             return;
         }
-        int x = Math.round(preset.x * (metrics.widthPixels / (float) preset.referenceWidth));
-        int y = Math.round(preset.y * (metrics.heightPixels / (float) preset.referenceHeight));
         removeFloatingView();
-        handler.postDelayed(() -> {
-            boolean sent = dispatchTap(x, y);
-            toast(sent ? "已选择：" + preset.name : "手势未被系统接受。 ");
-            showBubble();
-        }, 120);
+        handler.postDelayed(() -> captureAndFind(target, region), 120);
     }
 
-    private void applyManualColour(PresetStore.ManualColour manualColour) {
-        if (!isMiHomeColourPage()) {
-            toast("请先停留在米家该灯的“颜色”色盘页面。 ");
-            showBubble();
-            return;
-        }
-        PresetStore.Mapping mapping = PresetStore.loadMapping(this);
-        if (!mapping.hasColourBounds() || !mapping.hasBrightnessBounds()) {
-            toast("请先在助手中完成色盘与亮度滑杆校准。 ");
-            showBubble();
-            return;
-        }
-        DisplayMetrics metrics = new DisplayMetrics();
-        windowManager.getDefaultDisplay().getRealMetrics(metrics);
-        if (!hasMatchingAspect(metrics, mapping.colourWidth, mapping.colourHeight)
-                || !hasMatchingAspect(metrics, mapping.brightnessWidth, mapping.brightnessHeight)) {
-            toast("当前屏幕比例与校准截图不同，请重新校准。 ");
-            showBubble();
-            return;
-        }
-
-        float[] hsv = new float[3];
-        Color.RGBToHSV(manualColour.red, manualColour.green, manualColour.blue, hsv);
-        int colourX = Math.round(scaleX(mapping.left + (hsv[0] / 360f) * (mapping.right - mapping.left),
-                metrics.widthPixels, mapping.colourWidth));
-        int colourY = Math.round(scaleY(mapping.top + (1f - hsv[1]) * (mapping.bottom - mapping.top),
-                metrics.heightPixels, mapping.colourHeight));
-        float brightnessRatio = manualColour.brightness / 100f;
-        int brightnessX = Math.round(scaleX(mapping.brightnessStartX
-                + brightnessRatio * (mapping.brightnessEndX - mapping.brightnessStartX),
-                metrics.widthPixels, mapping.brightnessWidth));
-        int brightnessY = Math.round(scaleY(mapping.brightnessStartY
-                + brightnessRatio * (mapping.brightnessEndY - mapping.brightnessStartY),
-                metrics.heightPixels, mapping.brightnessHeight));
-
-        removeFloatingView();
-        handler.postDelayed(() -> {
-            if (!dispatchTap(colourX, colourY)) {
-                toast("色盘手势未被系统接受。 ");
-                showBubble();
-                return;
+    private void captureAndFind(PresetStore.RgbTarget target, PresetStore.ColourRegion region) {
+        takeScreenshot(Display.DEFAULT_DISPLAY, scanExecutor, new TakeScreenshotCallback() {
+            @Override
+            public void onSuccess(ScreenshotResult screenshotResult) {
+                Bitmap bitmap = null;
+                HardwareBuffer buffer = null;
+                try {
+                    buffer = screenshotResult.getHardwareBuffer();
+                    Bitmap hardwareBitmap = Bitmap.wrapHardwareBuffer(buffer, screenshotResult.getColorSpace());
+                    if (hardwareBitmap == null) {
+                        throw new IllegalStateException("无法读取当前屏幕。 ");
+                    }
+                    bitmap = hardwareBitmap.copy(Bitmap.Config.ARGB_8888, false);
+                    hardwareBitmap.recycle();
+                    buffer.close();
+                    buffer = null;
+                    Match match = findClosestMatch(bitmap, region, target);
+                    bitmap.recycle();
+                    bitmap = null;
+                    handler.post(() -> finishFind(match, target));
+                } catch (RuntimeException error) {
+                    if (bitmap != null) {
+                        bitmap.recycle();
+                    }
+                    if (buffer != null) {
+                        buffer.close();
+                    }
+                    handler.post(() -> {
+                        toast("找色失败：" + friendlyMessage(error));
+                        showBubble();
+                    });
+                }
             }
-            handler.postDelayed(() -> {
-                boolean brightnessSent = dispatchTap(brightnessX, brightnessY);
-                toast(brightnessSent ? "已应用手动 RGB 与亮度。" : "已点击色盘，但亮度手势未被系统接受。 ");
-                showBubble();
-            }, 250);
-        }, 120);
+
+            @Override
+            public void onFailure(int errorCode) {
+                handler.post(() -> {
+                    toast("系统拒绝屏幕截图（错误 " + errorCode + "）。 ");
+                    showBubble();
+                });
+            }
+        });
     }
 
-    private boolean hasMatchingAspect(DisplayMetrics metrics, int referenceWidth, int referenceHeight) {
-        float currentAspect = metrics.widthPixels / (float) metrics.heightPixels;
-        float referenceAspect = referenceWidth / (float) referenceHeight;
-        return Math.abs(currentAspect - referenceAspect) <= 0.01f;
+    private void finishFind(Match match, PresetStore.RgbTarget target) {
+        if (match == null) {
+            toast("安全区域内未找到足够接近 RGB(" + target.red + ", " + target.green + ", " + target.blue + ") 的像素；未执行点击。 ");
+            showBubble();
+            return;
+        }
+        boolean sent = dispatchTap(match.x, match.y);
+        toast(sent ? "已在安全区域点击 RGB 匹配点。" : "手势未被系统接受。 ");
+        showBubble();
     }
 
-    private float scaleX(float x, int currentWidth, int referenceWidth) {
-        return x * currentWidth / referenceWidth;
-    }
+    private Match findClosestMatch(Bitmap bitmap, PresetStore.ColourRegion region, PresetStore.RgbTarget target) {
+        int left = clamp(Math.round(region.left * (bitmap.getWidth() / (float) region.referenceWidth)), 0, bitmap.getWidth() - 1);
+        int top = clamp(Math.round(region.top * (bitmap.getHeight() / (float) region.referenceHeight)), 0, bitmap.getHeight() - 1);
+        int right = clamp(Math.round(region.right * (bitmap.getWidth() / (float) region.referenceWidth)), left + 1, bitmap.getWidth());
+        int bottom = clamp(Math.round(region.bottom * (bitmap.getHeight() / (float) region.referenceHeight)), top + 1, bitmap.getHeight());
 
-    private float scaleY(float y, int currentHeight, int referenceHeight) {
-        return y * currentHeight / referenceHeight;
+        int[] row = new int[right - left];
+        Match best = null;
+        for (int y = top; y < bottom; y++) {
+            bitmap.getPixels(row, 0, row.length, left, y, row.length, 1);
+            for (int index = 0; index < row.length; index++) {
+                int colour = row[index];
+                int redDifference = Math.abs(Color.red(colour) - target.red);
+                int greenDifference = Math.abs(Color.green(colour) - target.green);
+                int blueDifference = Math.abs(Color.blue(colour) - target.blue);
+                int maximumDifference = Math.max(redDifference, Math.max(greenDifference, blueDifference));
+                int distance = redDifference * redDifference + greenDifference * greenDifference + blueDifference * blueDifference;
+                if (best == null || distance < best.distance) {
+                    best = new Match(left + index, y, distance, maximumDifference);
+                }
+            }
+        }
+        return best != null && best.maximumDifference <= MAX_CHANNEL_DIFFERENCE ? best : null;
     }
 
     private boolean isMiHomeColourPage() {
@@ -282,9 +270,7 @@ public final class MijiaColorAccessibilityService extends AccessibilityService {
         if (depth > 30) {
             return false;
         }
-        CharSequence text = node.getText();
-        CharSequence description = node.getContentDescription();
-        if (containsColour(text) || containsColour(description)) {
+        if (containsColour(node.getText()) || containsColour(node.getContentDescription())) {
             return true;
         }
         for (int i = 0; i < node.getChildCount(); i++) {
@@ -301,9 +287,8 @@ public final class MijiaColorAccessibilityService extends AccessibilityService {
             return false;
         }
         String value = text.toString();
-        return value.contains("颜色") || value.contains("顏色")
-                || value.contains("色温") || value.contains("色溫")
-                || value.toLowerCase().contains("color");
+        return value.contains("颜色") || value.contains("顏色") || value.contains("色温")
+                || value.contains("色溫") || value.toLowerCase().contains("color");
     }
 
     private boolean dispatchTap(int x, int y) {
@@ -333,12 +318,34 @@ public final class MijiaColorAccessibilityService extends AccessibilityService {
                 PixelFormat.TRANSLUCENT);
     }
 
+    private int clamp(int value, int minimum, int maximum) {
+        return Math.max(minimum, Math.min(maximum, value));
+    }
+
+    private String friendlyMessage(Exception error) {
+        return error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
+    }
+
     private void toast(String message) {
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
     }
 
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private static final class Match {
+        final int x;
+        final int y;
+        final int distance;
+        final int maximumDifference;
+
+        Match(int x, int y, int distance, int maximumDifference) {
+            this.x = x;
+            this.y = y;
+            this.distance = distance;
+            this.maximumDifference = maximumDifference;
+        }
     }
 
     private final class BubbleTouchListener implements View.OnTouchListener {
@@ -370,7 +377,7 @@ public final class MijiaColorAccessibilityService extends AccessibilityService {
                     return true;
                 case MotionEvent.ACTION_UP:
                     if (!dragged) {
-                        showPalette();
+                        showPicker();
                     }
                     return true;
                 default:

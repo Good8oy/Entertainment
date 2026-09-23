@@ -1,6 +1,6 @@
 # Bilibili 乱序播放
 
-一个适用于 Chrome、Edge 等 Chromium 浏览器的 Manifest V3 扩展。在 Bilibili 播放页识别分 P、合集或番剧选集列表，提供手动随机跳转，并在当前视频播放结束后自动随机播放尚未播放过的条目。
+一个适用于 Chrome、Edge 等 Chromium 浏览器的 Manifest V3 扩展。在 Bilibili 播放页识别分 P、UP 主合集或番剧选集列表，提供手动随机跳转，并在当前视频播放结束后自动随机播放尚未播放过的条目。UP 主合集和分 P 优先通过 Bilibili 视频详情接口读取；页面链接作为其他列表的回退来源。
 
 ## 安装
 
@@ -21,6 +21,7 @@
 
 ## 权限
 
+- 开启扩展时会请求 api.bilibili.com 读取当前视频的分 P 或所属合集条目。
 - storage：保存用户的开关状态。
 - activeTab：扩展弹窗读取当前标签页并发送即时开关消息。
 - Bilibili 页面访问权限：读取播放页内的列表链接并监听视频播放结束事件。

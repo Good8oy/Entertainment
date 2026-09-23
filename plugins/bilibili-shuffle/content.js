@@ -26,6 +26,10 @@
   let nextButton;
   let lastUrl = location.href;
   let refreshTimer;
+  let apiCacheKey = "";
+  let apiPlaylist = [];
+  let apiPlaylistTitle = "";
+  let apiFetchingKey = "";
 
   function canonicalUrl(value) {
     try {
@@ -40,6 +44,10 @@
 
   function currentUrl() {
     return canonicalUrl(location.href);
+  }
+
+  function currentVideoId() {
+    return location.pathname.match(/^\/video\/(BV[\w]+|av\d+)/i)?.[1] || "";
   }
 
   function isVisible(element) {
@@ -100,6 +108,44 @@
     return best;
   }
 
+  function requestApiPlaylist() {
+    const videoId = currentVideoId();
+    if (!videoId || apiCacheKey === videoId || apiFetchingKey === videoId) return;
+
+    apiFetchingKey = videoId;
+    chrome.runtime.sendMessage({ type: "bilibili-shuffle:get-video-list", videoId }, (response) => {
+      if (apiFetchingKey === videoId) apiFetchingKey = "";
+      if (currentVideoId().toLowerCase() !== videoId.toLowerCase()) return;
+      apiCacheKey = videoId;
+
+      if (!response?.ok || !Array.isArray(response.items)) {
+        apiPlaylist = [];
+        apiPlaylistTitle = "";
+        updatePanel();
+        return;
+      }
+
+      const current = currentUrl();
+      const unique = new Map();
+      for (const item of response.items) {
+        const url = String(item.aid || "") === String(response.currentAid || "")
+          ? current
+          : canonicalUrl(item.url);
+        if (url && !unique.has(url)) unique.set(url, { url, title: item.title || "" });
+      }
+      apiPlaylist = [...unique.values()];
+      apiPlaylistTitle = response.title || "";
+      updatePanel();
+    });
+  }
+
+  function activePlaylist() {
+    const videoId = currentVideoId();
+    return videoId && videoId.toLowerCase() === apiCacheKey.toLowerCase() && apiPlaylist.length > 1
+      ? apiPlaylist
+      : collectPlaylist();
+  }
+
   function makePanel() {
     if (panel?.isConnected) return;
     panel = document.createElement("section");
@@ -123,11 +169,17 @@
     }
 
     makePanel();
-    const playlist = collectPlaylist();
+    const videoId = currentVideoId();
+    const apiReady = videoId && videoId.toLowerCase() === apiCacheKey.toLowerCase() && apiPlaylist.length > 1;
+    const playlist = activePlaylist();
     countElement.textContent = playlist.length > 1 ? playlist.length + " 个条目" : "";
     if (playlist.length > 1) {
-      statusElement.textContent = "视频结束后会自动随机切换，也可以手动跳转。";
+      const label = apiReady && apiPlaylistTitle ? apiPlaylistTitle + " · " : "";
+      statusElement.textContent = label + "视频结束后会自动随机切换，也可以手动跳转。";
       nextButton.disabled = false;
+    } else if (videoId && apiFetchingKey.toLowerCase() === videoId.toLowerCase()) {
+      statusElement.textContent = "正在读取合集和分 P 列表…";
+      nextButton.disabled = true;
     } else {
       statusElement.textContent = "当前页未找到可用的分 P、合集或选集列表。";
       nextButton.disabled = true;
@@ -145,7 +197,7 @@
 
   function playNext(manual = false) {
     if (!enabled) return;
-    const playlist = collectPlaylist();
+    const playlist = activePlaylist();
     if (playlist.length < 2) {
       updatePanel();
       return;
@@ -185,6 +237,7 @@
 
   function refresh() {
     if (location.href !== lastUrl) lastUrl = location.href;
+    if (enabled) requestApiPlaylist();
     if (enabled) updatePanel();
     document.querySelectorAll("video").forEach(bindVideo);
   }

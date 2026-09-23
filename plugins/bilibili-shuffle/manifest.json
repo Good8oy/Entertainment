@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Bilibili 乱序播放",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "在 Bilibili 播放页随机切换分 P、合集、番剧选集或播单条目。",
   "permissions": ["storage", "activeTab"],
   "host_permissions": [

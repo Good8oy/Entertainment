@@ -1,6 +1,7 @@
 (() => {
   const STORAGE_KEY = "enabled";
   const LEDGER_PREFIX = "bilibiliShufflePlayed:";
+  const LIST_CACHE_MAX_AGE = 10 * 60 * 1000;
   const ROOT_SELECTORS = [
     ".video-pod__list",
     ".video-pod",
@@ -21,7 +22,7 @@
     '[class*="episode-list"]',
     '[class*="multi-page"]',
   ];
-  const PLAYABLE_PATH = /^\/(?:video\/(?:BV[\w]+|av\d+)|bangumi\/play\/(?:ep\d+|ss\d+))/i;
+  const PLAYABLE_PATH = /^\/(video\/(?:BV[\w]+|av\d+)|bangumi\/play\/(?:ep\d+|ss\d+))\/?$/i;
   const boundVideos = new WeakSet();
   let enabled = false;
   let panel;
@@ -32,10 +33,14 @@
   let refreshTimer;
   let apiCacheKey = "";
   let apiPlaylist = [];
+  let apiCurrentUrl = "";
+  let apiPlaylistKind = "";
   let apiPlaylistTitle = "";
   let apiFetchingKey = "";
   let apiPlaylistTotal = 0;
   let apiPlaylistTruncated = false;
+  let apiErrorKey = "";
+  let navigationPending = false;
 
   function canonicalUrl(value) {
     try {
@@ -57,9 +62,10 @@
           url.searchParams.get("sort_field") || "",
         );
       }
-      if (!PLAYABLE_PATH.test(url.pathname)) return null;
-      const part = url.pathname.startsWith("/video/") ? url.searchParams.get("p") : null;
-      return url.origin + url.pathname + (part ? "?p=" + encodeURIComponent(part) : "");
+      const playable = url.pathname.match(PLAYABLE_PATH);
+      if (!playable) return null;
+      const part = url.pathname.startsWith("/video/") ? Number(url.searchParams.get("p")) : 1;
+      return url.origin + "/" + playable[1] + (Number.isInteger(part) && part > 1 ? "?p=" + part : "");
     } catch {
       return null;
     }
@@ -198,9 +204,16 @@
             const url = canonicalUrl(item.url);
             if (url && !unique.has(url)) unique.set(url, { url, title: String(item.title || "") });
           }
-          if (unique.size > 1) {
+          const currentBvid = new URL(location.href).searchParams.get("bvid");
+          const containsCurrent = !currentBvid || [...unique.keys()].some((url) =>
+            new URL(url).searchParams.get("bvid") === currentBvid,
+          );
+          if (unique.size > 1 && containsCurrent &&
+              Date.now() - Number(cached.fetchedAt) < LIST_CACHE_MAX_AGE) {
             apiCacheKey = key;
             apiPlaylist = [...unique.values()];
+            apiCurrentUrl = currentUrl();
+            apiPlaylistKind = "creator-list";
             apiPlaylistTitle = "";
             apiPlaylistTotal = Number(cached.totalCount) || apiPlaylist.length;
             apiPlaylistTruncated = Boolean(cached.truncated);
@@ -213,6 +226,7 @@
       }
 
       apiFetchingKey = key;
+      apiErrorKey = "";
       chrome.runtime.sendMessage(
         { type: "bilibili-shuffle:get-creator-list", listId, sortField },
         (response) => {
@@ -221,7 +235,10 @@
           apiCacheKey = key;
 
           if (!response?.ok || !Array.isArray(response.items)) {
+            apiErrorKey = key;
             apiPlaylist = [];
+            apiCurrentUrl = "";
+            apiPlaylistKind = "";
             apiPlaylistTitle = "";
             apiPlaylistTotal = 0;
             apiPlaylistTruncated = false;
@@ -235,6 +252,9 @@
             if (url && !unique.has(url)) unique.set(url, { url, title: item.title || "" });
           }
           apiPlaylist = [...unique.values()];
+          apiCurrentUrl = currentUrl();
+          apiPlaylistKind = "creator-list";
+          apiErrorKey = "";
           apiPlaylistTitle = "";
           apiPlaylistTotal = Number(response.totalCount) || apiPlaylist.length;
           apiPlaylistTruncated = Boolean(response.truncated);
@@ -243,6 +263,7 @@
               items: apiPlaylist,
               totalCount: apiPlaylistTotal,
               truncated: apiPlaylistTruncated,
+              fetchedAt: Date.now(),
             }));
           } catch {
             // Keep the in-memory list if session storage is full.
@@ -257,13 +278,17 @@
     if (!videoId || apiCacheKey === videoId || apiFetchingKey === videoId) return;
 
     apiFetchingKey = videoId;
+    apiErrorKey = "";
     chrome.runtime.sendMessage({ type: "bilibili-shuffle:get-video-list", videoId }, (response) => {
       if (apiFetchingKey === videoId) apiFetchingKey = "";
       if (currentVideoId().toLowerCase() !== videoId.toLowerCase()) return;
       apiCacheKey = videoId;
 
       if (!response?.ok || !Array.isArray(response.items)) {
+        apiErrorKey = videoId;
         apiPlaylist = [];
+        apiCurrentUrl = "";
+        apiPlaylistKind = "";
         apiPlaylistTitle = "";
         apiPlaylistTotal = 0;
         apiPlaylistTruncated = false;
@@ -273,13 +298,18 @@
 
       const current = currentUrl();
       const unique = new Map();
+      let currentItemUrl = "";
+      const currentPage = Number(new URL(location.href).searchParams.get("p")) || 1;
       for (const item of response.items) {
-        const url = String(item.aid || "") === String(response.currentAid || "")
-          ? current
-          : canonicalUrl(item.url);
+        const url = canonicalUrl(item.url);
         if (url && !unique.has(url)) unique.set(url, { url, title: item.title || "" });
+        if (url && ((item.aid && String(item.aid) === String(response.currentAid)) ||
+            (item.page && Number(item.page) === currentPage))) currentItemUrl = url;
       }
       apiPlaylist = [...unique.values()];
+      apiCurrentUrl = currentItemUrl || current;
+      apiPlaylistKind = response.kind || "";
+      apiErrorKey = "";
       apiPlaylistTitle = response.title || "";
       apiPlaylistTotal = apiPlaylist.length;
       apiPlaylistTruncated = false;
@@ -319,6 +349,7 @@
     makePanel();
     const playlistKey = currentPlaylistKey();
     const apiReady = playlistKey && playlistKey.toLowerCase() === apiCacheKey.toLowerCase() && apiPlaylist.length > 1;
+    const apiFailed = playlistKey && playlistKey.toLowerCase() === apiErrorKey.toLowerCase();
     const playlist = activePlaylist();
     if (playlistKey && playlistKey.toLowerCase() === apiFetchingKey.toLowerCase() && !apiReady) {
       statusElement.textContent = creatorListInfo()
@@ -336,25 +367,37 @@
       const range = apiReady && apiPlaylistTruncated
         ? "已加载 " + playlist.length + " / " + apiPlaylistTotal + " 条，"
         : "";
-      statusElement.textContent = label + range + "视频结束后会自动随机切换，也可以手动跳转。";
+      statusElement.textContent = apiFailed
+        ? "接口读取失败，仅从当前页面识别到 " + playlist.length + " 条；刷新页面可重试。"
+        : label + range + "视频结束后会自动随机切换，也可以手动跳转。";
       nextButton.disabled = false;
     } else {
-      statusElement.textContent = "当前页未找到可用的分 P、合集或选集列表。";
+      statusElement.textContent = apiFailed
+        ? "列表接口读取失败，当前页面也未找到可用列表；刷新页面可重试。"
+        : "当前页未找到可用的分 P、合集或选集列表。";
       nextButton.disabled = true;
     }
   }
 
   function ledgerFor(playlist) {
-    const key = LEDGER_PREFIX + playlist.map((item) => item.url).sort().join("|");
+    let hash = 2166136261;
+    for (const url of playlist.map((item) => item.url).sort()) {
+      for (let index = 0; index < url.length; index += 1) {
+        hash = Math.imul(hash ^ url.charCodeAt(index), 16777619);
+      }
+      hash = Math.imul(hash ^ 124, 16777619);
+    }
+    const key = LEDGER_PREFIX + playlist.length + ":" + (hash >>> 0).toString(36);
     try {
-      return { key, played: JSON.parse(sessionStorage.getItem(key) || "[]") };
+      const played = JSON.parse(sessionStorage.getItem(key) || "[]");
+      return { key, played: Array.isArray(played) ? played : [] };
     } catch {
       return { key, played: [] };
     }
   }
 
   function playNext(manual = false) {
-    if (!enabled) return;
+    if (!enabled || navigationPending) return;
     const playlist = activePlaylist();
     if (playlist.length < 2) {
       updatePanel();
@@ -362,8 +405,21 @@
     }
 
     const { key, played: previous } = ledgerFor(playlist);
-    const current = currentUrl();
-    const played = new Set(previous.filter((url) => playlist.some((item) => item.url === url)));
+    const playlistKey = currentPlaylistKey();
+    const available = new Set(playlist.map((item) => item.url));
+    let current = currentUrl();
+    if (!available.has(current) && playlistKey && playlistKey.toLowerCase() === apiCacheKey.toLowerCase()) {
+      if (apiPlaylistKind === "pages") {
+        const page = Number(new URL(location.href).searchParams.get("p")) || 1;
+        current = playlist.find((item) => Number(new URL(item.url).searchParams.get("p")) === page)?.url || current;
+      } else if (apiPlaylistKind === "creator-list") {
+        const bvid = new URL(location.href).searchParams.get("bvid");
+        current = playlist.find((item) => new URL(item.url).searchParams.get("bvid") === bvid)?.url || current;
+      } else {
+        current = apiCurrentUrl || current;
+      }
+    }
+    const played = new Set(previous.filter((url) => available.has(url)));
     if (current) played.add(current);
 
     let choices = playlist.filter((item) => !played.has(item.url));
@@ -382,6 +438,7 @@
       // Navigation still works if the browser blocks session storage.
     }
     if (manual) statusElement.textContent = "正在跳转：" + (choice.title || "随机条目");
+    navigationPending = true;
     location.assign(choice.url);
   }
 
@@ -394,7 +451,10 @@
   }
 
   function refresh() {
-    if (location.href !== lastUrl) lastUrl = location.href;
+    if (location.href !== lastUrl) {
+      lastUrl = location.href;
+      navigationPending = false;
+    }
     if (enabled) requestApiPlaylist();
     if (enabled) updatePanel();
     document.querySelectorAll("video").forEach(bindVideo);

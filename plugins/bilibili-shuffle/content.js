@@ -10,6 +10,10 @@
     ".ep-list",
     ".season-list",
     ".list-box",
+    "#playlist-video-action-list",
+    ".action-list-inner",
+    ".action-list",
+    ".action-list-item-wrap[data-key]",
     "#multi_page",
     ".multi-page",
     '[class*="video-pod"]',
@@ -30,10 +34,29 @@
   let apiPlaylist = [];
   let apiPlaylistTitle = "";
   let apiFetchingKey = "";
+  let apiPlaylistTotal = 0;
+  let apiPlaylistTruncated = false;
 
   function canonicalUrl(value) {
     try {
       const url = new URL(value, location.href);
+      const hostname = url.hostname.toLowerCase();
+      if (hostname !== "bilibili.com" &&
+          !hostname.endsWith(".bilibili.com") &&
+          hostname !== "bilibili.tv" &&
+          !hostname.endsWith(".bilibili.tv")) return null;
+      const listMatch = url.pathname.match(/^\/list\/(\d+)\/?$/);
+      if (listMatch) {
+        const videoId = url.searchParams.get("bvid");
+        if (!videoId) return null;
+        return creatorListUrl(
+          url.origin,
+          listMatch[1],
+          videoId,
+          url.searchParams.get("oid") || "",
+          url.searchParams.get("sort_field") || "",
+        );
+      }
       if (!PLAYABLE_PATH.test(url.pathname)) return null;
       const part = url.pathname.startsWith("/video/") ? url.searchParams.get("p") : null;
       return url.origin + url.pathname + (part ? "?p=" + encodeURIComponent(part) : "");
@@ -46,8 +69,27 @@
     return canonicalUrl(location.href);
   }
 
+  function creatorListUrl(origin, listId, videoId, aid, sortField) {
+    const query = new URLSearchParams();
+    if (sortField) query.set("sort_field", sortField);
+    if (aid) query.set("oid", aid);
+    query.set("bvid", videoId);
+    return origin + "/list/" + listId + "?" + query.toString();
+  }
+
   function currentVideoId() {
     return location.pathname.match(/^\/video\/(BV[\w]+|av\d+)/i)?.[1] || "";
+  }
+
+  function creatorListInfo() {
+    const match = location.pathname.match(/^\/list\/(\d+)\/?$/);
+    if (!match) return null;
+    const sortField = new URL(location.href).searchParams.get("sort_field") || "";
+    return { listId: match[1], sortField, key: "space:" + match[1] + ":" + sortField };
+  }
+
+  function currentPlaylistKey() {
+    return creatorListInfo()?.key || currentVideoId();
   }
 
   function isVisible(element) {
@@ -60,11 +102,40 @@
     return (anchor.getAttribute("title") || anchor.textContent || "").replace(/\s+/g, " ").trim();
   }
 
+  function listItemUrl(item) {
+    const videoId = item.dataset.key || "";
+    if (!/^(?:BV[\w]+|av\d+)$/i.test(videoId)) return null;
+    const listMatch = location.pathname.match(/^\/list\/(\d+)\/?$/);
+    if (!listMatch) return canonicalUrl("https://www.bilibili.com/video/" + videoId);
+
+    const aid = (item.dataset.index || "").split("_").pop();
+    return creatorListUrl(
+      location.origin,
+      listMatch[1],
+      videoId,
+      /^\d+$/.test(aid) ? aid : "",
+      new URL(location.href).searchParams.get("sort_field") || "",
+    );
+  }
+
   function linksIn(root) {
     const unique = new Map();
     for (const anchor of root.querySelectorAll("a[href]")) {
       const url = canonicalUrl(anchor.href);
       if (url && !unique.has(url)) unique.set(url, { url, title: titleFor(anchor) });
+    }
+
+    const listItems = [];
+    if (root.matches?.(".action-list-item-wrap[data-key]")) listItems.push(root);
+    listItems.push(...root.querySelectorAll(".action-list-item-wrap[data-key], [data-index][data-key]"));
+    for (const item of listItems) {
+      const url = listItemUrl(item);
+      if (!url || unique.has(url)) continue;
+      const title = item.querySelector(".title");
+      unique.set(url, {
+        url,
+        title: title?.getAttribute("title") || title?.textContent?.trim() || "",
+      });
     }
     return [...unique.values()];
   }
@@ -79,9 +150,12 @@
     }
 
     // Include current-item ancestors because Bilibili changes playlist class names regularly.
+    const currentItem = [...document.querySelectorAll(".action-list-item-wrap[data-key], [data-index][data-key]")]
+      .find((item) => listItemUrl(item) === current);
     const currentAnchor = [...document.querySelectorAll("a[href]")].find((anchor) => canonicalUrl(anchor.href) === current);
-    if (currentAnchor) {
-      let ancestor = currentAnchor.parentElement;
+    const currentNode = currentItem || currentAnchor;
+    if (currentNode) {
+      let ancestor = currentNode.parentElement;
       for (let depth = 0; ancestor && depth < 5; depth += 1, ancestor = ancestor.parentElement) {
         candidates.add(ancestor);
       }
@@ -95,8 +169,9 @@
           root.matches("#reco_list, .recommend-list, .video-page-card") ||
           root.querySelector("#reco_list, .recommend-list, .video-page-card")) continue;
       const links = linksIn(root);
-      const semantic = /playlist|video-pod|episode|season|multi-page|ep-list|cur-list/i.test(root.className || "");
-      if (links.length < 2 || links.length > (semantic ? 500 : 36) || !links.some((item) => item.url === current)) continue;
+      const semantic = /playlist|action-list|video-pod|episode|season|multi-page|ep-list|cur-list/i
+        .test((root.className || "") + " " + (root.id || ""));
+      if (links.length < 2 || links.length > (semantic ? 1000 : 36) || !links.some((item) => item.url === current)) continue;
       const score = links.length + (semantic ? 20 : 0) + (root.matches("li, a") ? -3 : 0);
       if (score > bestScore) {
         best = links;
@@ -109,6 +184,75 @@
   }
 
   function requestApiPlaylist() {
+    const creatorList = creatorListInfo();
+    if (creatorList) {
+      const { listId, sortField, key } = creatorList;
+      if (apiCacheKey === key || apiFetchingKey === key) return;
+
+      const storageKey = "bilibiliShuffleListCache:" + key;
+      try {
+        const cached = JSON.parse(sessionStorage.getItem(storageKey) || "null");
+        if (cached && Array.isArray(cached.items)) {
+          const unique = new Map();
+          for (const item of cached.items) {
+            const url = canonicalUrl(item.url);
+            if (url && !unique.has(url)) unique.set(url, { url, title: String(item.title || "") });
+          }
+          if (unique.size > 1) {
+            apiCacheKey = key;
+            apiPlaylist = [...unique.values()];
+            apiPlaylistTitle = "";
+            apiPlaylistTotal = Number(cached.totalCount) || apiPlaylist.length;
+            apiPlaylistTruncated = Boolean(cached.truncated);
+            updatePanel();
+            return;
+          }
+        }
+      } catch {
+        // Ignore stale session data and request a fresh list.
+      }
+
+      apiFetchingKey = key;
+      chrome.runtime.sendMessage(
+        { type: "bilibili-shuffle:get-creator-list", listId, sortField },
+        (response) => {
+          if (apiFetchingKey === key) apiFetchingKey = "";
+          if (creatorListInfo()?.key !== key) return;
+          apiCacheKey = key;
+
+          if (!response?.ok || !Array.isArray(response.items)) {
+            apiPlaylist = [];
+            apiPlaylistTitle = "";
+            apiPlaylistTotal = 0;
+            apiPlaylistTruncated = false;
+            updatePanel();
+            return;
+          }
+
+          const unique = new Map();
+          for (const item of response.items) {
+            const url = canonicalUrl(item.url);
+            if (url && !unique.has(url)) unique.set(url, { url, title: item.title || "" });
+          }
+          apiPlaylist = [...unique.values()];
+          apiPlaylistTitle = "";
+          apiPlaylistTotal = Number(response.totalCount) || apiPlaylist.length;
+          apiPlaylistTruncated = Boolean(response.truncated);
+          try {
+            sessionStorage.setItem(storageKey, JSON.stringify({
+              items: apiPlaylist,
+              totalCount: apiPlaylistTotal,
+              truncated: apiPlaylistTruncated,
+            }));
+          } catch {
+            // Keep the in-memory list if session storage is full.
+          }
+          updatePanel();
+        },
+      );
+      return;
+    }
+
     const videoId = currentVideoId();
     if (!videoId || apiCacheKey === videoId || apiFetchingKey === videoId) return;
 
@@ -121,6 +265,8 @@
       if (!response?.ok || !Array.isArray(response.items)) {
         apiPlaylist = [];
         apiPlaylistTitle = "";
+        apiPlaylistTotal = 0;
+        apiPlaylistTruncated = false;
         updatePanel();
         return;
       }
@@ -135,13 +281,15 @@
       }
       apiPlaylist = [...unique.values()];
       apiPlaylistTitle = response.title || "";
+      apiPlaylistTotal = apiPlaylist.length;
+      apiPlaylistTruncated = false;
       updatePanel();
     });
   }
 
   function activePlaylist() {
-    const videoId = currentVideoId();
-    return videoId && videoId.toLowerCase() === apiCacheKey.toLowerCase() && apiPlaylist.length > 1
+    const playlistKey = currentPlaylistKey();
+    return playlistKey && playlistKey.toLowerCase() === apiCacheKey.toLowerCase() && apiPlaylist.length > 1
       ? apiPlaylist
       : collectPlaylist();
   }
@@ -153,7 +301,7 @@
     panel.setAttribute("aria-label", "Bilibili 乱序播放");
     panel.innerHTML = '<div class="shuffle-heading"><span>乱序播放</span><span class="shuffle-count"></span></div>' +
       '<p class="shuffle-status" role="status" aria-live="polite"></p>' +
-      '<button class="shuffle-button" type="button">随机播放下一集</button>';
+      '<button class="shuffle-button" type="button">随机播放下一条</button>';
     document.documentElement.append(panel);
     statusElement = panel.querySelector(".shuffle-status");
     countElement = panel.querySelector(".shuffle-count");
@@ -169,17 +317,27 @@
     }
 
     makePanel();
-    const videoId = currentVideoId();
-    const apiReady = videoId && videoId.toLowerCase() === apiCacheKey.toLowerCase() && apiPlaylist.length > 1;
+    const playlistKey = currentPlaylistKey();
+    const apiReady = playlistKey && playlistKey.toLowerCase() === apiCacheKey.toLowerCase() && apiPlaylist.length > 1;
     const playlist = activePlaylist();
-    countElement.textContent = playlist.length > 1 ? playlist.length + " 个条目" : "";
+    if (playlistKey && playlistKey.toLowerCase() === apiFetchingKey.toLowerCase() && !apiReady) {
+      statusElement.textContent = creatorListInfo()
+        ? "正在读取完整播单…"
+        : "正在读取合集和分 P 列表…";
+      countElement.textContent = "";
+      nextButton.disabled = true;
+      return;
+    }
+    countElement.textContent = playlist.length > 1
+      ? (apiReady && apiPlaylistTruncated ? playlist.length + " / " + apiPlaylistTotal : playlist.length) + " 个条目"
+      : "";
     if (playlist.length > 1) {
       const label = apiReady && apiPlaylistTitle ? apiPlaylistTitle + " · " : "";
-      statusElement.textContent = label + "视频结束后会自动随机切换，也可以手动跳转。";
+      const range = apiReady && apiPlaylistTruncated
+        ? "已加载 " + playlist.length + " / " + apiPlaylistTotal + " 条，"
+        : "";
+      statusElement.textContent = label + range + "视频结束后会自动随机切换，也可以手动跳转。";
       nextButton.disabled = false;
-    } else if (videoId && apiFetchingKey.toLowerCase() === videoId.toLowerCase()) {
-      statusElement.textContent = "正在读取合集和分 P 列表…";
-      nextButton.disabled = true;
     } else {
       statusElement.textContent = "当前页未找到可用的分 P、合集或选集列表。";
       nextButton.disabled = true;

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Bilibili 乱序播放</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="popup">
+      <div class="brand">
+        <span class="brand-icon" aria-hidden="true">B</span>
+        <div>
+          <h1>Bilibili 乱序播放</h1>
+          <p>打乱当前播放列表的顺序</p>
+        </div>
+      </div>
+      <button id="toggle" type="button" aria-pressed="false">
+        <span class="toggle-dot" aria-hidden="true"></span>
+        <span id="toggle-label">正在读取…</span>
+      </button>
+      <p class="hint">开启后，在 B 站播放页右下角查看列表状态。</p>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -22,6 +22,7 @@ from .loader import load_file, numeric
 from .model import Evidence, ScanResult, Settings, Sheet, column_name, coordinate
 from .report import export_report
 from .style import STYLE
+from . import __version__
 
 LEVEL_COLOR = {"高风险": "#d85868", "中风险": "#c38a2a", "质量提示": "#71839f"}
 LEVEL_BG = {"高风险": "#fdebed", "中风险": "#fff3df", "质量提示": "#edf1f7"}
@@ -140,7 +141,7 @@ class SettingsDialog(QDialog):
         self.cross.setChecked(settings.cross_sheet)
         layout.addWidget(self.cross)
         layout.addWidget(label("仅核验左侧勾选的工作表。单文件最多 200,000 个单元格；"
-                               "候选、比较次数或证据达到上限时会明确提示。", "muted", True))
+                               "候选会自动分批建立本地索引；比较次数或证据达到上限时会明确提示。", "muted", True))
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("应用规则")
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
@@ -157,7 +158,7 @@ class SettingsDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self, demo=False):
         super().__init__()
-        self.setWindowTitle("DataScan Local · 科研数据核验工作台")
+        self.setWindowTitle(f"DataScan Local {__version__} · 科研数据核验工作台")
         self.resize(1500, 950)
         self.setMinimumSize(1120, 740)
         self.sheets: list[Sheet] = []
@@ -211,7 +212,7 @@ class MainWindow(QMainWindow):
         self.nav_buttons[0].setChecked(True)
         rail_layout.addStretch()
         rail_layout.addWidget(label("●  本地离线处理", "railFoot"))
-        rail_layout.addWidget(label("独立实现 · v0.1.0", "railFoot"))
+        rail_layout.addWidget(label(f"独立实现 · v{__version__}", "railFoot"))
         outer.addWidget(rail)
         body = QWidget()
         body_layout = vertical(body, spacing=0)
@@ -422,8 +423,9 @@ class MainWindow(QMainWindow):
             ("参数过滤", "开启后根据明确的表头识别时间、剂量、浓度、波长、频率、温度、序号等参数。"
              "至少需要四个不同数值（replicate 至少三个）才会进入相应关系检测；常数、低辨识度序列通常不进入候选。"
              "表头过滤是启发式方法，可能漏排或错排；关闭过滤后可复查。日期、布尔值和公式文本不参与数值比较。"),
-            ("范围、性能与遗漏", "单文件上限 50 MB、200,000 个单元格；Excel 解压上限 256 MB。候选片段最多 100,000 个。"
-             "达到候选上限时要求缩小范围，不生成部分结果；达到 2,000 条证据或 500,000 次关系比较时返回明确标记的部分结果。"
+            ("范围、性能与遗漏", "单文件上限 50 MB、200,000 个单元格；Excel 解压上限 256 MB。"
+             "候选片段和矩形使用本地磁盘分批索引，不因超过 100,000 个候选而中止，也不会抽样跳过片段。"
+             "索引仅存指纹与坐标引用，核验结束或取消后清理。达到 2,000 条证据或 500,000 次关系比较时返回明确标记的部分结果。"
              "程序不是穷举检验，不能保证检出全部数值关系。近似线性、任意稀疏间距及其他大小的矩形未覆盖。"
              "含数值文本按浮点数解释，末尾零、显示格式和超出浮点精度的数值信息不能用于判断测量精度。"),
             ("怎样解释结果", "风险级别是规则预设标签，不是造假概率。共同对照、校准、单位转换、正常归一化和周期性实验设计"

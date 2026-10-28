@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from contextlib import contextmanager
 from decimal import Decimal, InvalidOperation
 from math import isclose, isfinite
 from time import perf_counter
 
 from .loader import numeric
+from .index import CandidateIndex
 from .model import Evidence, Region, ScanResult, Settings, Sheet
 
 RULE_NAMES = {
@@ -103,6 +105,11 @@ class EvidenceLimit(Exception):
 def scan(sheets: list[Sheet], settings: Settings | None = None,
          progress=lambda percent, message: None, cancelled=lambda: False) -> ScanResult:
     settings = settings or Settings()
+    with CandidateIndex(settings.index_batch_size, cancelled) as index:
+        return _scan(sheets, settings, progress, cancelled, index)
+
+
+def _scan(sheets, settings, progress, cancelled, index):
     if not 4 <= settings.window <= 20:
         raise ValueError("连续片段长度必须在 4–20 之间。")
     if not sheets:
@@ -111,7 +118,8 @@ def scan(sheets: list[Sheet], settings: Settings | None = None,
     notes = [f"{s.filename} / {w}" for s in sheets for w in s.warnings]
     evidence: list[Evidence] = []
     containment_cache = {}
-    all_series, windows, seen = [], [], set()
+    all_series = []
+    block_count = 0
 
     def check():
         if cancelled():
@@ -144,43 +152,65 @@ def scan(sheets: list[Sheet], settings: Settings | None = None,
                                  description, relation, regions, details or {}))
 
     progress(1, "读取工作表数值区域")
-    for sheet in sheets:
-        check()
-        all_series.extend(_series(sheet, settings))
+    window_rules = set(settings.rules) & {"duplicate", "reordered", "decimal", "affine"}
+    if window_rules or set(settings.rules) & {"replicate", "cycle"}:
+        for sheet in sheets:
+            check()
+            all_series.extend(_series(sheet, settings))
     w = settings.window
-    # Full runs first: stronger evidence takes precedence over overlapping fragments.
-    for series in sorted(all_series, key=lambda r: -len(r.values)):
-        check()
-        candidates = [series] if len(series.values) >= w else []
-        candidates += [Region(series.sheet, series.cells[i:i + w], series.values[i:i + w], series.label)
-                       for i in range(len(series.values) - w + 1)]
-        if "reordered" in settings.rules:
-            candidates += [Region(series.sheet, series.cells[parity::2], series.values[parity::2], series.label)
-                           for parity in (0, 1) if len(series.values[parity::2]) >= w]
-            candidates += [Region(series.sheet, series.cells[i:i + w * 2:2],
-                                  series.values[i:i + w * 2:2], series.label)
-                           for i in range(len(series.values) - 2 * w + 2)]
-        for region in candidates:
-            key = region.sheet, region.cells
-            if key in seen or not informative(region.values):
-                continue
-            seen.add(key)
-            windows.append(region)
-            if len(windows) > settings.max_windows:
-                raise ValueError(f"候选片段超过 {settings.max_windows:,} 个。请减少工作表，或增大片段长度。未生成部分结果。")
-    windows.sort(key=lambda r: -len(r.values))
-    progress(15, f"建立 {len(windows):,} 个候选片段索引")
+    # Only numeric series stay in memory. Sliding candidates are compact references on disk.
+    # No per-window Region, coordinate tuple or value tuple is retained in a Python list.
+    def references(length):
+        if length < w:
+            return
+        yield 0, length, 1
+        if length > w:
+            for start in range(length - w + 1):
+                yield start, start + w, 1
+        if "reordered" in window_rules:
+            for parity in (0, 1):
+                size = (length - parity + 1) // 2
+                if size >= w:
+                    yield parity, length, 2
+            for start in range(length - 2 * w + 2):
+                # Avoid repeating the full parity slice when its length is exactly w.
+                if start in (0, 1) and (length - start + 1) // 2 == w:
+                    continue
+                yield start, start + 2 * w - 1, 2
 
-    def buckets(keyfunc):
-        table = defaultdict(list)
-        for index, region in enumerate(windows):
-            if index % 1024 == 0:
-                check()
-            signature = keyfunc(region.values)
-            if signature is not None:
-                scope = None if settings.cross_sheet else region.sheet
-                table[(scope, len(region.values), signature)].append(region)
-        return (items for items in table.values() if len(items) > 1)
+    if window_rules:
+        for source, series in sorted(enumerate(all_series), key=lambda pair: -len(pair[1].values)):
+            check()
+            for start_pos, stop_pos, step in references(len(series.values)):
+                values = series.values[start_pos:stop_pos:step]
+                if not informative(values):
+                    continue
+                signatures = {}
+                if window_rules & {"duplicate", "reordered"}:
+                    signatures["exact"] = values
+                if "reordered" in window_rules:
+                    signatures["reordered"] = tuple(sorted(values))
+                if "decimal" in window_rules:
+                    signatures["decimal"] = fractional_signature(values)
+                if "affine" in window_rules:
+                    signatures["affine"] = affine_signature(values)
+                index.add((source, start_pos, stop_pos, step),
+                          "" if settings.cross_sheet else series.sheet, len(values), signatures)
+                if index.count % 1024 == 0:
+                    check()
+                    progress(10, f"本地分批索引：{index.count:,} 个片段")
+    progress(15, f"已建立 {index.count:,} 个片段索引")
+
+    def materialize(reference):
+        source, start_pos, stop_pos, step = reference
+        series = all_series[source]
+        return Region(series.sheet, series.cells[start_pos:stop_pos:step],
+                      series.values[start_pos:stop_pos:step], series.label)
+
+    @contextmanager
+    def buckets(kind):
+        with index.groups(kind) as groups:
+            yield ((materialize(reference) for reference in group) for group in groups)
 
     comparisons = 0
 
@@ -196,71 +226,81 @@ def scan(sheets: list[Sheet], settings: Settings | None = None,
     complete = True
     try:
         if "duplicate" in settings.rules or "reordered" in settings.rules:
-            for group in buckets(tuple):
-                accepted = []
-                for candidate in group:
-                    if all(compatible(candidate, previous) for previous in accepted):
-                        accepted.append(candidate)
-                if len(accepted) >= 2:
-                    def is_sparse(r):
-                        return len(r.cells) > 1 and (
-                        abs(r.cells[1][0] - r.cells[0][0]) == 2 or
-                        abs(r.cells[1][1] - r.cells[0][1]) == 2)
-                    dense = [r for r in accepted if not is_sparse(r)]
-                    if "duplicate" in settings.rules and len(dense) >= 2:
-                        add("duplicate", "完全相同的数值片段", "高风险",
-                            "多个不重叠区域具有完全相同的数值顺序；请核对是否为正常共享数据或记录复用。",
-                            "对应数值完全一致", dense)
-                    if "reordered" in settings.rules and any(map(is_sparse, accepted)):
-                        add("reordered", "隔行／隔列片段复用", "高风险",
-                            "相同数值序列涉及间隔为 2 的片段；具体命中坐标保留在对照视图和报告中。",
-                            "对应数值完全一致", accepted)
+            with buckets("exact") as groups:
+                for group in groups:
+                    accepted = []
+                    for candidate in group:
+                        if accepted and candidate.values != accepted[0].values:
+                            continue
+                        if all(compatible(candidate, previous) for previous in accepted):
+                            accepted.append(candidate)
+                    if len(accepted) >= 2:
+                        def is_sparse(r):
+                            return len(r.cells) > 1 and (
+                            abs(r.cells[1][0] - r.cells[0][0]) == 2 or
+                            abs(r.cells[1][1] - r.cells[0][1]) == 2)
+                        dense = [r for r in accepted if not is_sparse(r)]
+                        if "duplicate" in settings.rules and len(dense) >= 2:
+                            add("duplicate", "完全相同的数值片段", "高风险",
+                                "多个不重叠区域具有完全相同的数值顺序；请核对是否为正常共享数据或记录复用。",
+                                "对应数值完全一致", dense)
+                        if "reordered" in settings.rules and any(map(is_sparse, accepted)):
+                            add("reordered", "隔行／隔列片段复用", "高风险",
+                                "相同数值序列涉及间隔为 2 的片段；具体命中坐标保留在对照视图和报告中。",
+                                "对应数值完全一致", accepted)
         progress(30, "检查错位重排与小数尾关系")
         if "reordered" in settings.rules:
-            for group in buckets(lambda v: tuple(sorted(v))):
-                # Compare a representative with each candidate; exact copies handled above.
-                for candidate in group[1:]:
-                    anchor = group[0]
-                    if compatible(anchor, candidate) and anchor.values != candidate.values:
-                        positions = defaultdict(list)
-                        for index, value in enumerate(candidate.values):
-                            positions[value].append(index)
-                        mapping = [positions[value].pop(0) for value in anchor.values]
-                        aligned = Region(candidate.sheet, tuple(candidate.cells[i] for i in mapping),
-                                         tuple(candidate.values[i] for i in mapping), candidate.label)
-                        add("reordered", "同一组数值以不同顺序出现", "高风险",
-                            "区域数值的多重集合完全一致，顺序不同；对照视图已按源区域顺序重排目标坐标。",
-                            "数值重排后完全一致", [anchor, aligned], {"target_permutation": mapping})
+            with buckets("reordered") as groups:
+                for group in groups:
+                    # Compare a representative with each candidate; exact copies handled above.
+                    anchor = next(group)
+                    ordered = sorted(anchor.values)
+                    for candidate in group:
+                        if (compatible(anchor, candidate) and anchor.values != candidate.values
+                                and sorted(candidate.values) == ordered):
+                            positions = defaultdict(list)
+                            for position, value in enumerate(candidate.values):
+                                positions[value].append(position)
+                            mapping = [positions[value].pop(0) for value in anchor.values]
+                            aligned = Region(candidate.sheet, tuple(candidate.cells[i] for i in mapping),
+                                             tuple(candidate.values[i] for i in mapping), candidate.label)
+                            add("reordered", "同一组数值以不同顺序出现", "高风险",
+                                "区域数值的多重集合完全一致，顺序不同；对照视图已按源区域顺序重排目标坐标。",
+                                "数值重排后完全一致", [anchor, aligned], {"target_permutation": mapping})
         if "decimal" in settings.rules:
-            for group in buckets(fractional_signature):
-                anchor = group[0]
-                candidates = [r for r in group[1:] if compatible(anchor, r) and r.values != anchor.values]
-                if candidates:
-                    add("decimal", "整数部分改变，小数尾保持一致", "高风险",
-                        "各对应值绝对值的小数部分（至少三位）一致。需结合量纲与处理流程复核。",
-                        "abs(y) 与 abs(x) 的小数部分一致", [anchor, *candidates])
+            with buckets("decimal") as groups:
+                for group in groups:
+                    anchor = next(group)
+                    signature = fractional_signature(anchor.values)
+                    for candidate in group:
+                        if (compatible(anchor, candidate) and candidate.values != anchor.values
+                                and fractional_signature(candidate.values) == signature):
+                            add("decimal", "整数部分改变，小数尾保持一致", "高风险",
+                                "各对应值绝对值的小数部分（至少三位）一致。需结合量纲与处理流程复核。",
+                                "abs(y) 与 abs(x) 的小数部分一致", [anchor, candidate])
         progress(48, "检查固定差值、比例与线性派生")
         if "affine" in settings.rules:
-            for group in buckets(affine_signature):
-                anchor = group[0]
-                for candidate in group[1:]:
-                    if not compatible(anchor, candidate):
-                        continue
-                    relation = affine(anchor.values, candidate.values, settings.tolerance)
-                    if relation is None:
-                        continue
-                    slope, intercept = relation
-                    if same(slope, 1, settings.tolerance) and same(intercept, 0, settings.tolerance):
-                        continue
-                    title = "固定差值关系" if same(slope, 1, settings.tolerance) else (
-                        "固定比例关系" if same(intercept, 0, settings.tolerance) else "线性派生关系")
-                    display_slope = 1 if same(slope, 1, settings.tolerance) else slope
-                    display_intercept = 0 if same(intercept, 0, settings.tolerance) else intercept
-                    formula = f"y = {display_slope:.10g} × x {display_intercept:+.10g}"
-                    add("affine", title, "中风险", "对应数值满足同一仿射关系；归一化、校准或单位转换也可能产生此关系。",
-                        formula, [anchor, candidate], {"slope": slope, "intercept": intercept,
-                        "max_residual": max(abs(y - (slope * x + intercept))
-                                            for x, y in zip(anchor.values, candidate.values))})
+            with buckets("affine") as groups:
+                for group in groups:
+                    anchor = next(group)
+                    for candidate in group:
+                        if not compatible(anchor, candidate):
+                            continue
+                        relation = affine(anchor.values, candidate.values, settings.tolerance)
+                        if relation is None:
+                            continue
+                        slope, intercept = relation
+                        if same(slope, 1, settings.tolerance) and same(intercept, 0, settings.tolerance):
+                            continue
+                        title = "固定差值关系" if same(slope, 1, settings.tolerance) else (
+                            "固定比例关系" if same(intercept, 0, settings.tolerance) else "线性派生关系")
+                        display_slope = 1 if same(slope, 1, settings.tolerance) else slope
+                        display_intercept = 0 if same(intercept, 0, settings.tolerance) else intercept
+                        formula = f"y = {display_slope:.10g} × x {display_intercept:+.10g}"
+                        add("affine", title, "中风险", "对应数值满足同一仿射关系；归一化、校准或单位转换也可能产生此关系。",
+                            formula, [anchor, candidate], {"slope": slope, "intercept": intercept,
+                            "max_residual": max(abs(y - (slope * x + intercept))
+                                                for x, y in zip(anchor.values, candidate.values))})
         progress(66, "检查 replicate 与差值循环")
         if "replicate" in settings.rules:
             # Require explicit replicate labels; do not infer biological replicates from arbitrary columns.
@@ -299,33 +339,39 @@ def scan(sheets: list[Sheet], settings: Settings | None = None,
                         break
         progress(80, "检查矩形块与数字分布")
         if "block" in settings.rules:
-            blocks = defaultdict(list)
-            block_count = 0
-            for sheet in sheets:
-                for row in range(1, len(sheet.rows)):
-                    check()
-                    for col in range(1, sheet.width - 1):
-                        cells = tuple((r, c) for r in (row, row + 1) for c in range(col, col + 3))
-                        values = tuple(numeric(sheet.value(*cell)) for cell in cells)
-                        if None in values or not informative(values):
-                            continue
-                        if settings.filter_parameters and any(is_parameter(str(sheet.value(1, c) or ""))
-                                                              for c in range(col, col + 3)):
-                            continue
-                        block_count += 1
-                        if block_count > settings.max_windows:
-                            raise ValueError("2 × 3 矩形候选超过上限，请减少范围。未生成部分结果。")
-                        scope = None if settings.cross_sheet else sheet.key
-                        blocks[(scope, values)].append(Region(sheet.key, cells, values, "2 × 3 矩形"))
-            for group in blocks.values():
-                accepted = []
-                for region in group:
-                    if all(compatible(region, r) for r in accepted):
-                        accepted.append(region)
-                if len(accepted) > 1:
-                    add("block", "2 × 3 矩形区域重复", "高风险",
-                        "多个不重叠的 2 行 × 3 列矩形块包含相同的数值排列。",
-                        "矩形中相同位置的数值完全一致", accepted, {"shape": [2, 3]})
+            with CandidateIndex(settings.index_batch_size, cancelled) as blocks:
+                for source, sheet in enumerate(sheets):
+                    width = sheet.width
+                    for row in range(1, len(sheet.rows)):
+                        check()
+                        for col in range(1, width - 1):
+                            cells = tuple((r, c) for r in (row, row + 1) for c in range(col, col + 3))
+                            values = tuple(numeric(sheet.value(*cell)) for cell in cells)
+                            if None in values or not informative(values):
+                                continue
+                            if settings.filter_parameters and any(is_parameter(str(sheet.value(1, c) or ""))
+                                                                  for c in range(col, col + 3)):
+                                continue
+                            blocks.add((source, row, col, 0), "" if settings.cross_sheet else sheet.key,
+                                       6, {"exact": values})
+                            if blocks.count % 1024 == 0:
+                                progress(82, f"本地分批索引：{blocks.count:,} 个矩形")
+                block_count = blocks.count
+                with blocks.groups("exact") as groups:
+                    for group in groups:
+                        accepted = []
+                        for source, row, col, _ in group:
+                            sheet = sheets[source]
+                            cells = tuple((r, c) for r in (row, row + 1) for c in range(col, col + 3))
+                            region = Region(sheet.key, cells, tuple(numeric(sheet.value(*cell)) for cell in cells), "2 × 3 矩形")
+                            if accepted and region.values != accepted[0].values:
+                                continue
+                            if all(compatible(region, r) for r in accepted):
+                                accepted.append(region)
+                        if len(accepted) > 1:
+                            add("block", "2 × 3 矩形区域重复", "高风险",
+                                "多个不重叠的 2 行 × 3 列矩形块包含相同的数值排列。",
+                                "矩形中相同位置的数值完全一致", accepted, {"shape": [2, 3]})
         if "quality" in settings.rules:
             for sheet in sheets:
                 check()
@@ -368,4 +414,6 @@ def scan(sheets: list[Sheet], settings: Settings | None = None,
     notes.append("数值文本按浮点数比较；公式不计算，日期与布尔值不参与。数字精度来自存储值，不代表仪器精度。")
     notes.append("错位核验限连续片段、间隔为 2 的片段及窗口内重排；矩形核验限 2 × 3。近似线性与其他稀疏间距未覆盖。")
     return ScanResult(settings, sheets, evidence, list(dict.fromkeys(notes)), perf_counter() - start,
-                      complete=complete)
+                      complete=complete, statistics={"indexed_windows": index.count,
+                      "indexed_blocks": block_count,
+                      "candidate_storage": "local_sqlite", "index_batch_size": settings.index_batch_size})

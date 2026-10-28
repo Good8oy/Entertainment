@@ -12,18 +12,20 @@ New-Item -ItemType Directory -Path artifacts -Force | Out-Null
 & $taskPython -c "from PySide6.QtWidgets import QApplication; from datascan.app import MainWindow; app=QApplication([]); assert MainWindow.icon().pixmap(64,64).save('artifacts/app.ico')"
 if ($LASTEXITCODE -ne 0) { throw 'Icon generation failed.' }
 $taskBasePython = & $taskPython -c "import sys; print(sys.base_prefix)"
+$taskVersion = & $taskPython -c "from datascan import __version__; print(__version__)"
+$taskExecutableName = "DataScanLocal-$taskVersion"
 $taskOriginalPath = $env:PATH
 try {
     # Avoid copying unrelated application runtimes (Poppler/libheif/Conda) from PATH.
     $env:PATH = "$PSScriptRoot\.venv\Scripts;$taskBasePython;$taskBasePython\DLLs;$env:SystemRoot\System32;$env:SystemRoot"
-    & $taskPython -m PyInstaller --noconfirm --clean --onefile --windowed --name DataScanLocal --icon artifacts/app.ico run.py
+    & $taskPython -m PyInstaller --noconfirm --clean --onefile --windowed --name $taskExecutableName --icon artifacts/app.ico run.py
     if ($LASTEXITCODE -ne 0) { throw 'Packaging failed.' }
 } finally {
     $env:PATH = $taskOriginalPath
 }
-$taskCheckOutput = Join-Path $PSScriptRoot 'artifacts\frozen-self-test.json'
-$taskCheckProcess = Start-Process -FilePath (Join-Path $PSScriptRoot 'dist\DataScanLocal.exe') -ArgumentList @('--self-test', ('"{0}"' -f $taskCheckOutput)) -WindowStyle Hidden -Wait -PassThru
+$taskCheckOutput = Join-Path $PSScriptRoot "artifacts\frozen-self-test-$taskVersion.json"
+$taskCheckProcess = Start-Process -FilePath (Join-Path $PSScriptRoot "dist\$taskExecutableName.exe") -ArgumentList @('--self-test', ('"{0}"' -f $taskCheckOutput)) -WindowStyle Hidden -Wait -PassThru
 if ($taskCheckProcess.ExitCode -ne 0) { throw 'Frozen executable self-test failed.' }
 $taskCheckResult = Get-Content -LiteralPath $taskCheckOutput -Raw | ConvertFrom-Json
 if (-not $taskCheckResult.success -or -not $taskCheckResult.frozen) { throw 'Frozen-runtime verification did not pass.' }
-Write-Host 'Built: dist\DataScanLocal.exe'
+Write-Host "Built: dist\$taskExecutableName.exe"

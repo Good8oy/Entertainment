@@ -150,9 +150,25 @@ def test_evidence_limit_is_explicitly_incomplete():
     assert any("部分核验" in w for w in result.warnings)
 
 
-def test_candidate_limit_raises_instead_of_silent_truncation():
-    with pytest.raises(ValueError, match="候选片段"):
-        run("duplicate", V, V, max_windows=1)
+def test_index_batch_size_is_not_a_candidate_limit():
+    result = run("duplicate", V, V, index_batch_size=1)
+    assert result.complete
+    assert result.statistics["indexed_windows"] > 1
+    assert len(result.evidence) == 1
+
+
+def test_only_quality_rule_does_not_build_unrelated_windows():
+    result = run("quality", V)
+    assert result.statistics["indexed_windows"] == 0
+
+
+def test_block_scan_is_not_limited_by_window_batch_size():
+    grid = [[3.172, 8.463, 4.291], [9.537, 2.684, 7.815]]
+    inputs = [Sheet("A", "a.csv", "A", grid), Sheet("B", "b.csv", "B", grid)]
+    result = scan(inputs, Settings(rules=["block"], index_batch_size=1))
+    assert result.complete
+    assert result.statistics["indexed_blocks"] == 2
+    assert len(result.evidence) == 1
 
 
 def test_cancellation_yields_no_partial_result():

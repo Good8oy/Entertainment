@@ -8,6 +8,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 from datascan.app import MainWindow
+from datascan import __version__
 
 
 def main():
@@ -33,8 +34,26 @@ def main():
                 report = json.loads((folder / "check.json").read_text(encoding="utf-8"))
                 if len(report["evidence"]) != len(result.evidence):
                     raise RuntimeError("Report round-trip check failed")
-                payload = {"success": True, "frozen": bool(getattr(sys, "frozen", False)),
-                           "sheets": len(result.sheets), "evidence": len(result.evidence), "rules": dict(counts)}
+                # Exercise the former 100,000-candidate failure in the actual frozen runtime.
+                from random import Random
+                from datascan.model import Sheet
+                random = Random(196)
+                rows = [["Signal A", "Signal B"]]
+                rows += [[round(random.uniform(1, 1000), 4), round(random.uniform(1, 1000), 4)]
+                         for _ in range(26_000)]
+                for offset in range(6):
+                    rows[-6 + offset][1] = rows[1 + offset][0]
+                large = scan([Sheet("large", "synthetic-large.xlsx", "Data", rows)])
+                found_last = any(e.rule == "duplicate" and
+                                 any(r.cells[-1] == (len(rows), 2) for r in e.regions)
+                                 for e in large.evidence)
+                if not large.complete or large.statistics["indexed_windows"] <= 100_000 or not found_last:
+                    raise RuntimeError("Large-candidate regression check failed")
+                payload = {"success": True, "version": __version__,
+                           "frozen": bool(getattr(sys, "frozen", False)),
+                           "sheets": len(result.sheets), "evidence": len(result.evidence), "rules": dict(counts),
+                           "large_scan": {**large.statistics, "complete": large.complete,
+                                          "last_row_match": found_last, "elapsed_seconds": round(large.elapsed, 3)}}
         except Exception as error:
             payload = {"success": False, "error": f"{type(error).__name__}: {error}"}
         Path(args.self_test).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

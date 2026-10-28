@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from . import __version__
 
 
 def column_name(col: int) -> str:
@@ -82,7 +83,7 @@ class Settings:
         "duplicate", "reordered", "decimal", "affine", "cycle",
         "replicate", "block", "quality",
     ])
-    max_windows: int = 100_000
+    index_batch_size: int = 10_000
     max_evidence: int = 2_000
 
 
@@ -95,12 +96,14 @@ class ScanResult:
     elapsed: float
     started: str = field(default_factory=lambda: datetime.now().astimezone().isoformat(timespec="seconds"))
     complete: bool = True
+    statistics: dict = field(default_factory=dict)
 
     def payload(self) -> dict:
         return {
-            "application": "DataScan Local", "version": "0.1.0",
+            "application": "DataScan Local", "version": __version__,
             "started": self.started, "elapsed_seconds": round(self.elapsed, 3),
             "complete": self.complete, "settings": asdict(self.settings),
+            "scan_statistics": self.statistics,
             "scope": [{"key": s.key, "file": s.filename, "path": s.path,
                        "sheet": s.name, "rows": len(s.rows), "columns": s.width,
                        "source_sha256": s.source_sha256}

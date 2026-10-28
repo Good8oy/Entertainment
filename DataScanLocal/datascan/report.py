@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .engine import RULE_NAMES
 from .model import ScanResult, coordinate
+from . import __version__
 
 
 def esc(value) -> str:
@@ -62,13 +63,14 @@ th{{background:#f4f7fc}}.values,.hash{{font:11px/1.6 Consolas,monospace}}.formul
 <section class='panel'><h2>核验范围</h2><table><tr><th>文件</th><th>工作表</th><th>行数</th><th>列数</th><th>文件 SHA-256</th></tr>{scope}</table>
 <p>所选规则：{esc(rules)}。</p><p>最短片段：{result.settings.window}；表头参数过滤：{'开启' if result.settings.filter_parameters else '关闭'}；
 跨工作表比较：{'开启' if result.settings.cross_sheet else '关闭'}；线性相对／绝对容差：{result.settings.tolerance:g}。</p>
+<p>本地分批索引：{result.statistics.get('indexed_windows', 0):,} 个片段，{result.statistics.get('indexed_blocks', 0):,} 个矩形。候选数量不作为中止条件。</p>
 <p>文件哈希在导入时计算，对应内存中用于核验的文件快照。风险分级为预设规则标签，不是概率或统计置信度。</p></section>
 {''.join(cards) if cards else "<section class='panel'><h2>未检出所选规则覆盖的关系</h2><p>请结合检测范围和方法边界解释结果。</p></section>"}
 <section class='panel'><h2>方法与边界</h2><ul>{warnings}</ul><p>重复、重排及小数尾使用确定性数值索引；
 线性候选使用归一化指纹后逐项验证。浮点候选指纹存在舍入边界，不能保证检出所有近似关系。
 Replicate 规则仅检查明确含 rep / replicate / 重复编号的列；差值循环至少重复三个周期。
 质量提示要求至少 50 个非整数值；按最常见的存储小数位数统一舍入（最多 12 位）后，均匀末位分布仅是探索性参考。</p>
-<p>本程序为依据公开功能说明独立实现的 DataScan Local 0.1.0，不代表原产品的算法、性能或结论。</p></section>
+<p>本程序为依据公开功能说明独立实现的 DataScan Local {__version__}，不代表原产品的算法、性能或结论。</p></section>
 </main></body></html>"""
 
 

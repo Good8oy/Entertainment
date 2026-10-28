@@ -2,21 +2,25 @@
 import hashlib
 import json
 import subprocess
+import sys
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from datascan import __version__
 
 
 def main():
     root = Path(__file__).resolve().parents[1]
-    executable = root / "dist" / "DataScanLocal.exe"
-    check = json.loads((root / "artifacts" / "frozen-self-test.json").read_text(encoding="utf-8"))
-    if not check.get("success") or not check.get("frozen"):
+    executable = root / "dist" / f"DataScanLocal-{__version__}.exe"
+    check = json.loads((root / "artifacts" / f"frozen-self-test-{__version__}.json").read_text(encoding="utf-8"))
+    if not check.get("success") or not check.get("frozen") or check.get("version") != __version__:
         raise RuntimeError("Package only a successfully verified frozen executable")
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
-    manifest = {"version": "0.1.0", "source_commit": commit,
+    manifest = {"version": __version__, "source_commit": commit,
                 "executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
                 "frozen_self_test": check}
-    archive = root / "dist" / "DataScanLocal-0.1.0-Windows.zip"
+    archive = root / "dist" / f"DataScanLocal-{__version__}-Windows.zip"
     with ZipFile(archive, "w", ZIP_DEFLATED) as output:
         output.write(executable, "DataScanLocal.exe")
         output.write(root / "README.md", "README.md")

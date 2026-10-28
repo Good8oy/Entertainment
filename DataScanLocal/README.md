@@ -4,7 +4,9 @@
 
 ## Windows 直接使用
 
-双击交付目录中的 `DataScanLocal.exe`，无需安装 Python、Excel 或联网。首次解包启动需要数秒。
+双击交付目录中的 `DataScanLocal-0.1.1.exe`（压缩包内为 `DataScanLocal.exe`），无需安装 Python、Excel 或联网。首次解包启动需要数秒。
+
+0.1.1 已修复初版“候选片段超过 100,000 个”中止的问题。候选改为本地磁盘分批索引，不因这个数量中止，也不会抽样跳过数据。
 
 1. 点击“载入演示数据”可体验完整流程。演示文件全部为合成数据。
 2. “导入数据文件”可多选 `.xlsx`、`.xlsm`、`.xls`、`.csv`、`.tsv`，也可将文件拖入窗口。
@@ -36,11 +38,12 @@
 ### 保护上限
 
 - 单文件最大 50 MB、200,000 个单元格；Excel 解压后最大 256 MB。
-- 最多 100,000 个候选片段或矩形，超过后要求缩小范围，不生成部分结果。
+- 候选片段和矩形使用 SQLite 本地临时磁盘索引，默认每 10,000 条提交一批，超过 100,000 条也会继续；批量大小不是总量上限。只为所选规则建立需要的索引。
+- 临时索引只保留数值指纹与坐标引用，扫描结束、异常或取消后清理；候选索引缓存限制为 8 MiB，原始工作表与命中证据仍保存在内存。
 - 达到 2,000 条证据或 500,000 次关系比较时，结果与报告明确标注“部分核验”。
 - 对照面板显示前 100 对数值；源表和报告保留全部命中坐标。
 
-报告带文件导入时的 SHA-256、所选范围、规则参数、方法边界和复核记录。JSON 还包括本地源文件路径。请自行保管报告中的数据。
+报告带文件导入时的 SHA-256、所选范围、规则参数、已索引候选数量、方法边界和复核记录。JSON 还包括本地源文件路径。请自行保管报告中的数据。
 
 ## 源码运行
 
@@ -74,9 +77,9 @@ uv pip install --python .venv\Scripts\python.exe --link-mode=copy -r requirement
 .\build.ps1
 ```
 
-输出 `dist/DataScanLocal.exe`。运行时只需要 PySide6 Essentials、openpyxl、xlrd；不需要模型、后端服务、账号、API key 或数据库。Qt 原生界面在 Windows 上直接检查；如在 CI 中使用 `offscreen`，需额外配置中文字体，不能用缺字的截图评判实际排版。
+输出 `dist/DataScanLocal-0.1.1.exe`。运行时只需要 PySide6 Essentials、openpyxl、xlrd；不需要模型、后端服务、账号、API key 或单独安装数据库，SQLite 来自 Python 标准库。Qt 原生界面在 Windows 上直接检查；如在 CI 中使用 `offscreen`，需额外配置中文字体，不能用缺字的截图评判实际排版。
 
-打包时仅对当前构建进程使用 Python 与 Windows 的 DLL 搜索路径，结束后还原，避免从其他软件收集不兼容运行库。构建后自动执行无窗口自检，验证冻结环境下八类规则和三种报告导出。
+打包时仅对当前构建进程使用 Python 与 Windows 的 DLL 搜索路径，结束后还原，避免从其他软件收集不兼容运行库。构建后自动执行无窗口自检，验证冻结环境下八类规则、三种报告导出，以及超过 100,000 个候选仍完成扫描并检出表末重复片段。
 
 ## 目录
 
@@ -84,6 +87,7 @@ uv pip install --python .venv\Scripts\python.exe --link-mode=copy -r requirement
 datascan/
   app.py       中文桌面工作台与异步任务
   engine.py    八类确定性筛查规则
+  index.py     有界缓存的本地临时候选索引
   loader.py    本地表格读取与数据类型处理
   model.py     表格、坐标、证据和核验结果
   report.py    HTML / JSON / CSV 导出

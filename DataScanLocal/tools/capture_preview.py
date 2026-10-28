@@ -1,6 +1,7 @@
 """Render this application's own widgets on the native Qt platform for visual QA."""
 import sys
 import time
+import argparse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -12,11 +13,17 @@ from datascan.report import export_report
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--hidden", action="store_true", help="Render this app's widgets without showing a desktop window")
+    args = parser.parse_args()
     output = Path(__file__).resolve().parents[1] / "artifacts"
     output.mkdir(exist_ok=True)
     app = QApplication([])
     window = MainWindow()
-    window.show()
+    if args.hidden:
+        window.ensurePolished()
+    else:
+        window.show()
     window.import_paths(create_demo(output / "demo"))
     deadline = time.monotonic() + 20
     while window.worker:

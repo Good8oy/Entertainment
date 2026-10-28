@@ -11,10 +11,12 @@
 | `python` 默认指向 Conda 3.7.1 | 使用现代 Qt 与 Python 工具链 | 默认解释器过旧 | 发现已安装的 uv Python 3.12，建立项目虚拟环境 | 避免解析到旧版依赖和混用全局环境 |
 | uv 缓存与项目位于不同盘符 | 快速硬链接依赖 | 跨卷不能硬链接 | 显式 `--link-mode=copy` | 初始化路径稳定，日志更清楚 |
 | Windows Qt offscreen 渲染缺字 | 截图验证中文排版 | offscreen 字体枚举不完整 | Qt 原生平台检查与截图 | 避免把缺字截图误认为产品问题 |
+| EXE 在导入 QtWidgets 时报告 DLL 过程缺失 | 独立 EXE 运行 | PyInstaller 从工具链 PATH 误收集 libheif 的 ucrtbase 和 Poppler 的 OpenSSL | 仅为构建进程设置 Python / Windows 的干净 PATH，构建后还原 | 避免错误打包其他应用的底层运行库 |
 
 ## Recommended Improvement
 
 项目启动脚本固定创建 Python 3.12 环境，已有环境预检版本；依赖安装显式复制。
+打包脚本隔离本次构建的 DLL 搜索路径，并对产物执行不打开窗口的八类规则与三种报告自检。
 GUI 验证优先使用原生平台；CI 使用 offscreen 时显式加载字体。
 已有初始化脚本足够承载修复，不需要新技能或全局环境改动。
 

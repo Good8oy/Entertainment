@@ -76,6 +76,8 @@ uv pip install --python .venv\Scripts\python.exe --link-mode=copy -r requirement
 
 输出 `dist/DataScanLocal.exe`。运行时只需要 PySide6 Essentials、openpyxl、xlrd；不需要模型、后端服务、账号、API key 或数据库。Qt 原生界面在 Windows 上直接检查；如在 CI 中使用 `offscreen`，需额外配置中文字体，不能用缺字的截图评判实际排版。
 
+打包时仅对当前构建进程使用 Python 与 Windows 的 DLL 搜索路径，结束后还原，避免从其他软件收集不兼容运行库。构建后自动执行无窗口自检，验证冻结环境下八类规则和三种报告导出。
+
 ## 目录
 
 ```text
